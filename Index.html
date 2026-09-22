@@ -361,7 +361,7 @@ const CHECK_ROWS = [
   {k:'c_pallet', label:'Pallet & Load', req:'Sound pallet, stable load, wrapped/secured.'},
   {k:'c_label', label:'Labels / SSCC', req:'Correct, legible, scannable where required.'},
   {k:'c_docs', label:'Documentation', req:'Dispatch paperwork complete and matches system.'},
-  {k:'c_recon', label:'Pallet Reconciliation', req:'Expected, physical & documented counts agree.'},
+  {k:'c_weightsDims', label:'Pallet Order Needs Weights & Dims', req:'PASS if this pallet order requires dimensions and weight to be recorded.'},
   {k:'c_vehicle', label:'Vehicle & Driver', req:'Correct carrier, vehicle and driver verified.'},
   {k:'c_importerLabels', label:'Awaiting Importer Labels', req:'Importer labels received and applied — must not be outstanding before release.', naAllowed:true},
   {k:'c_dgNotes', label:'Awaiting Dangerous Goods Notes', req:'Dangerous goods documentation received — must not be outstanding before release.', naAllowed:true},
@@ -414,6 +414,7 @@ function backfillOrders(arr){
     CHECK_ROWS.forEach(r => { if (!o.checks[r.k]) o.checks[r.k] = {status:null, comment:''}; });
     if (!o.stageEnteredAt) o.stageEnteredAt = o.createdAt || new Date().toISOString();
     if (!o.stageStamps) o.stageStamps = {};
+    if (!o.dims) o.dims = {length:'', width:'', height:'', weight:''};
   });
 }
 let recentlySavedUntil = {}; // orderId -> timestamp until which incoming realtime echoes are ignored
@@ -448,6 +449,7 @@ async function blankOrder(){
     checks:{}, photos:[], activity:[], dispatchedAt:null,
     deleted:false, deletedAt:null, deletedBy:null, deleteReason:'',
     stageStamps:{},
+    dims: {length:'', width:'', height:'', weight:''},
   };
   CHECK_ROWS.forEach(r => o.checks[r.k] = {status:null, comment:''});
   return o;
@@ -755,6 +757,19 @@ function renderModal(){
               </td>
               <td><input class="comment-input" data-comment="${r.k}" value="${(o.checks[r.k].comment||'').replace(/"/g,'&quot;')}" ${o.deleted?'disabled':''} style="width:100%;font-size:11.5px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;"></td>
             </tr>
+            ${(r.k === 'c_weightsDims' && o.checks[r.k].status === 'PASS') ? `
+            <tr>
+              <td colspan="4" style="background:#f7f9fc;">
+                <div style="font-size:10.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px;">Pallet Dimensions & Weight</div>
+                <div class="grid" style="grid-template-columns:repeat(4,1fr); gap:8px;">
+                  <div class="field"><label>Length (mm)</label><input type="number" data-dims="length" value="${(o.dims && o.dims.length) || ''}" ${o.deleted?'disabled':''}></div>
+                  <div class="field"><label>Width (mm)</label><input type="number" data-dims="width" value="${(o.dims && o.dims.width) || ''}" ${o.deleted?'disabled':''}></div>
+                  <div class="field"><label>Height (mm)</label><input type="number" data-dims="height" value="${(o.dims && o.dims.height) || ''}" ${o.deleted?'disabled':''}></div>
+                  <div class="field"><label>Weight (kg)</label><input type="number" data-dims="weight" value="${(o.dims && o.dims.weight) || ''}" ${o.deleted?'disabled':''}></div>
+                </div>
+              </td>
+            </tr>
+            ` : ''}
           `).join('')}
         </table>
       </div>
@@ -825,6 +840,13 @@ function renderModal(){
   });
   modal.querySelectorAll('[data-comment]').forEach(inp => {
     inp.addEventListener('input', e => { o.checks[e.target.dataset.comment].comment = e.target.value; persistOrders(); });
+  });
+  modal.querySelectorAll('[data-dims]').forEach(inp => {
+    inp.addEventListener('change', e => {
+      if (!o.dims) o.dims = {length:'', width:'', height:'', weight:''};
+      o.dims[e.target.dataset.dims] = e.target.value;
+      persistOrders();
+    });
   });
 }
 
