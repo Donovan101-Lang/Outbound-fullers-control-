@@ -414,7 +414,8 @@ function backfillOrders(arr){
     CHECK_ROWS.forEach(r => { if (!o.checks[r.k]) o.checks[r.k] = {status:null, comment:''}; });
     if (!o.stageEnteredAt) o.stageEnteredAt = o.createdAt || new Date().toISOString();
     if (!o.stageStamps) o.stageStamps = {};
-    if (!o.dims) o.dims = {length:'', width:'', height:'', weight:''};
+    if (!Array.isArray(o.dims)) o.dims = (o.dims && typeof o.dims === 'object') ? [o.dims] : [];
+    if (o.dims.length === 0) o.dims.push({length:'', width:'', height:'', weight:''});
   });
 }
 let recentlySavedUntil = {}; // orderId -> timestamp until which incoming realtime echoes are ignored
@@ -449,7 +450,7 @@ async function blankOrder(){
     checks:{}, photos:[], activity:[], dispatchedAt:null,
     deleted:false, deletedAt:null, deletedBy:null, deleteReason:'',
     stageStamps:{},
-    dims: {length:'', width:'', height:'', weight:''},
+    dims: [{length:'', width:'', height:'', weight:''}],
   };
   CHECK_ROWS.forEach(r => o.checks[r.k] = {status:null, comment:''});
   return o;
@@ -484,9 +485,15 @@ function renderSummary(){
   const counts = {};
   STAGES.forEach(s => counts[s.id] = 0);
   let overdue = 0, dispatchedToday = 0;
+  const dispatchedCutoff = Date.now() - (BOARD_DISPATCHED_VISIBLE_DAYS * 24 * 60 * 60 * 1000);
   orders.forEach(o => {
     if (o.deleted) return;
-    counts[o.stage] = (counts[o.stage]||0) + 1;
+    if (o.stage === 'dispatched'){
+      const dispatchedTime = o.dispatchedAt ? new Date(o.dispatchedAt).getTime() : 0;
+      if (dispatchedTime >= dispatchedCutoff) counts.dispatched = (counts.dispatched||0) + 1;
+    } else {
+      counts[o.stage] = (counts[o.stage]||0) + 1;
+    }
     if (isOverdue(o)) overdue++;
     if (o.stage === 'dispatched' && isToday(o.dispatchedAt)) dispatchedToday++;
   });
@@ -498,21 +505,33 @@ function renderSummary(){
     + `<div class="sumcard overdue"><div class="n${overdue>0?' dot':''}">${overdue}</div><div class="l">Overdue Collection</div></div>`;
 }
 
+const BOARD_DISPATCHED_VISIBLE_DAYS = 2;
+
 function renderBoard(){
   const grid = document.getElementById('boardGrid');
   const searchEl = document.getElementById('boardSearch');
   const q = (searchEl && searchEl.value || '').toLowerCase();
-  const stageItemsAll = STAGES.map(stage => orders.filter(o => o.stage === stage.id && !o.deleted));
+  const dispatchedCutoff = Date.now() - (BOARD_DISPATCHED_VISIBLE_DAYS * 24 * 60 * 60 * 1000);
+  const stageItemsAll = STAGES.map(stage => orders.filter(o => {
+    if (o.deleted || o.stage !== stage.id) return false;
+    if (stage.id === 'dispatched'){
+      const dispatchedTime = o.dispatchedAt ? new Date(o.dispatchedAt).getTime() : 0;
+      return dispatchedTime >= dispatchedCutoff;
+    }
+    return true;
+  }));
   const maxCount = Math.max(1, ...stageItemsAll.map(items => items.length));
   grid.innerHTML = STAGES.map((stage, idx) => {
     const items = stageItemsAll[idx]
       .filter(o => !q || [o.customer,o.orderNo,o.carrier,o.driver].join(' ').toLowerCase().includes(q))
       .sort((a,b) => (a.requestedCollection||'').localeCompare(b.requestedCollection||''));
     const pct = Math.round((stageItemsAll[idx].length / maxCount) * 100);
+    const note = (stage.id === 'dispatched') ? `<div style="font-size:10px; color:var(--muted); margin:-4px 0 8px;">Older than ${BOARD_DISPATCHED_VISIBLE_DAYS} days — see History</div>` : '';
     return `
       <div class="col" style="--stage-color:var(--stage-${stage.id})">
         <h3>${stage.label} <span class="cnt">${items.length}</span></h3>
         <div class="col-progress"><div class="col-progress-fill" style="width:${pct}%"></div></div>
+        ${note}
         ${items.length ? items.map(o => cardHtml(o)).join('') : '<div class="empty-col">Nothing here</div>'}
       </div>`;
   }).join('');
@@ -760,13 +779,18 @@ function renderModal(){
             ${(r.k === 'c_weightsDims' && o.checks[r.k].status === 'PASS') ? `
             <tr>
               <td colspan="4" style="background:#f7f9fc;">
-                <div style="font-size:10.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px;">Pallet Dimensions & Weight</div>
-                <div class="grid" style="grid-template-columns:repeat(4,1fr); gap:8px;">
-                  <div class="field"><label>Length (mm)</label><input type="number" data-dims="length" value="${(o.dims && o.dims.length) || ''}" ${o.deleted?'disabled':''}></div>
-                  <div class="field"><label>Width (mm)</label><input type="number" data-dims="width" value="${(o.dims && o.dims.width) || ''}" ${o.deleted?'disabled':''}></div>
-                  <div class="field"><label>Height (mm)</label><input type="number" data-dims="height" value="${(o.dims && o.dims.height) || ''}" ${o.deleted?'disabled':''}></div>
-                  <div class="field"><label>Weight (kg)</label><input type="number" data-dims="weight" value="${(o.dims && o.dims.weight) || ''}" ${o.deleted?'disabled':''}></div>
-                </div>
+                <div style="font-size:10.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.3px; margin-bottom:8px;">Pallet Dimensions & Weight</div>
+                ${(o.dims||[]).map((d,i) => `
+                  <div style="display:flex; align-items:flex-end; gap:8px; margin-bottom:8px;">
+                    <div style="font-size:11px; font-weight:700; color:var(--muted); min-width:54px; padding-bottom:8px;">Pallet ${i+1}</div>
+                    <div class="field" style="flex:1;"><label>Length (mm)</label><input type="number" data-dims-index="${i}" data-dims-field="length" value="${d.length||''}" ${o.deleted?'disabled':''}></div>
+                    <div class="field" style="flex:1;"><label>Width (mm)</label><input type="number" data-dims-index="${i}" data-dims-field="width" value="${d.width||''}" ${o.deleted?'disabled':''}></div>
+                    <div class="field" style="flex:1;"><label>Height (mm)</label><input type="number" data-dims-index="${i}" data-dims-field="height" value="${d.height||''}" ${o.deleted?'disabled':''}></div>
+                    <div class="field" style="flex:1;"><label>Weight (kg)</label><input type="number" data-dims-index="${i}" data-dims-field="weight" value="${d.weight||''}" ${o.deleted?'disabled':''}></div>
+                    ${(!o.deleted && o.dims.length > 1) ? `<button type="button" class="btn ghost sm" onclick="removeDimsPallet(${i})" style="margin-bottom:1px;">✕</button>` : ''}
+                  </div>
+                `).join('')}
+                ${!o.deleted ? `<button type="button" class="btn ghost sm" onclick="addDimsPallet()">+ Add Pallet</button>` : ''}
               </td>
             </tr>
             ` : ''}
@@ -841,13 +865,33 @@ function renderModal(){
   modal.querySelectorAll('[data-comment]').forEach(inp => {
     inp.addEventListener('input', e => { o.checks[e.target.dataset.comment].comment = e.target.value; persistOrders(); });
   });
-  modal.querySelectorAll('[data-dims]').forEach(inp => {
+  modal.querySelectorAll('[data-dims-field]').forEach(inp => {
     inp.addEventListener('change', e => {
-      if (!o.dims) o.dims = {length:'', width:'', height:'', weight:''};
-      o.dims[e.target.dataset.dims] = e.target.value;
+      const idx = parseInt(e.target.dataset.dimsIndex, 10);
+      const field = e.target.dataset.dimsField;
+      if (!Array.isArray(o.dims)) o.dims = [];
+      if (!o.dims[idx]) o.dims[idx] = {length:'', width:'', height:'', weight:''};
+      o.dims[idx][field] = e.target.value;
       persistOrders();
     });
   });
+}
+
+function addDimsPallet(){
+  const o = getOrder(activeOrderId);
+  if (!o) return;
+  if (!Array.isArray(o.dims)) o.dims = [];
+  o.dims.push({length:'', width:'', height:'', weight:''});
+  persistOrders();
+  renderModal();
+}
+function removeDimsPallet(index){
+  const o = getOrder(activeOrderId);
+  if (!o || !Array.isArray(o.dims)) return;
+  o.dims.splice(index, 1);
+  if (o.dims.length === 0) o.dims.push({length:'', width:'', height:'', weight:''});
+  persistOrders();
+  renderModal();
 }
 
 function addNote(){
